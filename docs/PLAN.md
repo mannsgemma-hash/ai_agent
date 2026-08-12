@@ -152,20 +152,36 @@ app/
 - **API:** `files/list_folder`, `files/download`, `files/get_temporary_link`.
   A convention like `/listings/<sku>/` lets the agent find the assets for a listing.
 
-### Canva (optional — thumbnail generation)
-- **Auth:** OAuth 2.0 (auth-code + PKCE).
-- **Role:** generate branded Etsy **thumbnails** from a template.
-- **API (Connect API):** Asset Upload → Autofill a Brand Template (image slot +
-  title/price text) → Export to PNG (async job, poll for the download URL).
-- **⚠️ Plan gate:** the **Autofill / Brand Template** endpoints have required a
-  **Canva Enterprise** plan — verify your tier before relying on this. The
-  general asset/design/export endpoints are more broadly available.
-- **Design decision — keep it pluggable.** The thumbnail step sits behind a
-  single interface, `make_thumbnail(photo, title, price) -> image`, with two
-  possible backends: **Canva** (if on Enterprise) or a **local Pillow
-  compositor** (no OAuth, no plan gate, less design flexibility). Flow E doesn't
-  care which is used, so we can start with whatever the plan supports and swap
-  later.
+### Canva — thumbnail generation (no Enterprise plan)
+- **Role:** generate branded Etsy **thumbnails**, keeping Canva's design tools.
+- **The Enterprise gate is only on Autofill / Brand Template** (hands-off
+  data-merge). The other paths below need no Enterprise plan.
+- **Backends behind one interface `make_thumbnail(photo, title, price) -> image`:**
+  1. **Local Pillow, Canva-designed template** *(recommended default).* Design
+     the template once in Canva; export the frame/overlay; the agent composites
+     each product photo + text onto it automatically with **Pillow**. Free,
+     per-listing, fully automated. Keeps the Canva look.
+  2. **Canva Pro "Bulk Create"** *(Pro, not Enterprise).* Agent produces the data
+     spreadsheet (photo links + Claude-drafted title/price); you run Bulk Create
+     once in Canva; export the batch. Canva does the render; agent does the prep.
+  3. **Canva Connect API without autofill.** Non-Enterprise still exposes **asset
+     upload**, **create design**, and **export**. Agent uploads the photo, opens
+     a design, hands you a deep edit link; you finish in Canva; agent exports the
+     PNG and sends it to Etsy. Most Canva-native; one manual step per listing.
+     *(Verify the asset/design/export scopes at setup — docs weren't reachable to
+     re-confirm, but these have sat outside the Enterprise gate.)*
+- Flow E is backend-agnostic, so we can start with #1 and switch anytime.
+- **Canva MCP server (integration method, not a 4th backend).** Canva ships an
+  official **MCP server** the agent connects to natively — no custom Canva client
+  to build. It surfaces Canva's **AI "generate a design from a prompt"** (Magic
+  Design), which is **free/Pro, not Enterprise** — a non-Enterprise way to
+  produce thumbnails through Canva. Caveats: MCP is a wrapper over Canva's API
+  under *your* plan, so **Autofill stays Enterprise-gated through MCP too**; and
+  it's built for an agent-in-the-loop, so it suits **chat-driven** listing
+  creation (§7), not silent batch automation. Verify its exact tool list / auth
+  at setup (docs not reachable from here).
+- **Net thumbnail strategy:** Canva **MCP** for chat-driven, in-the-loop listing
+  creation; **Pillow template** (#1) for headless/volume automation.
 
 ---
 
@@ -238,6 +254,11 @@ Three options, and it's not either/or:
 | **A. MCP + Claude app** *(recommended)* | Expose tools via MCP; chat in Claude Desktop/web | Internal ops & Q&A — you/your team | Low |
 | **B. Custom chat endpoint** | Your own UI + Claude API tool loop | Branded / customer-facing / embedded | High |
 | **C. Managed Agents** | Anthropic hosts the loop + sandbox on a schedule | Autonomous scheduled runs | Medium |
+
+**Connectors:** with Option A, the Claude app can load several MCP servers at
+once — **our** MCP server (Xero/Etsy/Gmail/Dropbox) plus **Canva's official MCP
+server** for design/thumbnail generation. The agent drives all of them in one
+conversation.
 
 **Key point:** the chat face is **optional and additive**. The automated flows
 (Gmail ingest, Etsy sales/fee sync) run headless as background workers and need
