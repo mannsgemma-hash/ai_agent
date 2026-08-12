@@ -88,6 +88,20 @@ Every integration is a thin, typed wrapper. These same tools are called by the
 background workers (automated flows) **and** exposed to the chat face via MCP.
 Write once, use from both.
 
+### One agent, both domains
+
+**A single agent handles both the financial side and Etsy listing/store
+management.** The agent is one Claude reasoning loop that routes a request to
+whichever tool fits — Xero sales, Etsy fees, or a Dropbox→Etsy listing — so it
+doesn't need to be split by domain. Most of the work is deterministic code in the
+shared tool layer anyway, and the guardrails (draft + human approval) are
+per-action, not per-agent, so finance stays safe alongside store management.
+
+Split into a **coordinator + specialists** (a finance specialist and a
+listings/store specialist behind one entry point) only if the combined tool set
+grows confusing or you want the finance side more tightly isolated. Start with
+one agent; treat the split as a later optimization.
+
 ### Suggested project layout
 
 ```
