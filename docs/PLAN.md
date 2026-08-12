@@ -1,8 +1,8 @@
 # Business Back-Office Agent — Architecture & Roadmap
 
-An AI agent for the back end of the business, integrating **Xero** (accounting)
-and **Etsy** (marketplace), built in **Python / FastAPI** with **Claude** as the
-reasoning engine.
+An AI agent for the back end of the business, integrating **Xero** (accounting),
+**Etsy** (marketplace), **Gmail** (receipts), and **Dropbox** (file storage),
+built in **Python / FastAPI** with **Claude** as the reasoning engine.
 
 Status: planning only. No application code yet.
 
@@ -10,21 +10,15 @@ Status: planning only. No application code yet.
 
 ## 1. What the agent does
 
-Five capabilities, in rough priority order:
-
-1. **Expenses from Etsy → Xero.** Turn Etsy seller fees, transaction fees,
-   shipping labels, ads, etc. into expense records (bills or spend-money
-   transactions) in Xero.
-2. **Expenses from email → Xero.** Read supplier invoices and receipts that
-   arrive by email (body + PDF/image attachments), extract the vendor, amount,
-   tax, and date, and create the matching expense in Xero.
-3. **Sync Etsy sales → Xero.** Pull Etsy orders/receipts and record the revenue
-   (and the Etsy fees netted against each payout) in Xero.
-4. **Reporting & Q&A.** Answer natural-language questions — *"what were my Etsy
-   fees last month?"*, *"reconcile this payout"*, *"how much VAT do I owe?"* —
-   against live Xero and Etsy data.
-5. **Inventory / listings operations.** Read and update Etsy listings, stock
-   levels, and pricing, optionally driven by data held in Xero.
+1. **Create Etsy listings** from images/files held in **Dropbox** (see §5, Flow E).
+2. **Record Etsy purchases as sales in Xero.** Every Etsy order becomes a sales
+   invoice in Xero, with Etsy fees recorded against the payout.
+3. **Expenses from Etsy → Xero.** Etsy seller/transaction/ads/shipping fees
+   become expense records in Xero.
+4. **Expenses from email → Xero.** Supplier invoices/receipts arriving in
+   **Gmail** (body + PDF/image attachments) are extracted and posted to Xero.
+5. **Reporting & Q&A.** Natural-language questions against live Xero/Etsy data.
+6. **Inventory / listings operations.** Read/update Etsy listings, stock, pricing.
 
 ---
 
@@ -32,102 +26,81 @@ Five capabilities, in rough priority order:
 
 **Use Claude for judgment; use plain code for plumbing.**
 
-The agent is *not* one big autonomous loop that "does accounting." The reliable,
-well-defined work — OAuth, API calls, pagination, retries, idempotency, writing
-to a database — is deterministic code. Claude is used only where a task needs
-genuine language understanding or judgment:
+The reliable, well-defined work — OAuth, API calls, pagination, retries,
+idempotency, database writes — is deterministic code. Claude is used only where a
+task needs language understanding or judgment.
 
 | Task | Handled by |
 |------|-----------|
-| OAuth token exchange & refresh | Code |
-| Fetching Etsy orders / Xero reports | Code |
+| OAuth token exchange & refresh (Xero, Etsy, Gmail, Dropbox) | Code |
+| Fetching orders / reports / files | Code |
 | Deduplication & idempotency | Code |
 | **Reading a receipt email → structured fields** | **Claude** |
 | **Choosing the right Xero account / category** | **Claude** |
+| **Drafting listing title/description/tags from an image** | **Claude** |
 | **Answering natural-language questions** | **Claude** |
-| Writing the transaction to Xero | Code (from Claude's structured output) |
-| **Approving a financial write** | **Human** (see §6) |
+| Writing to Xero / creating the Etsy listing | Code (from Claude's structured output) |
+| **Approving a financial write or a live listing** | **Human** (§6) |
 
-This keeps money-touching operations predictable and auditable, and reserves the
-LLM for the fuzzy parts it's actually good at.
+Money-touching and publish-to-store operations stay predictable and auditable;
+the LLM handles the fuzzy parts it's good at.
 
 ---
 
 ## 3. System architecture
 
+There is **one core service** (business logic + tools + DB) with **two faces**:
+an automated/event-driven face (background workers) and a conversational face
+(chat). Both call the same underlying tool layer — built once.
+
 ```
-                         ┌───────────────────────────┐
-   Email (Gmail)  ─────► │                           │
-   Etsy webhooks/poll ─► │      FastAPI backend      │ ◄──── Chat / UI (Q&A)
-                         │                           │
-                         │  ┌─────────────────────┐  │
-                         │  │  Agent orchestrator │  │  Claude API
-                         │  │  (Claude tool loop) │◄─┼──►(Opus 5 /
-                         │  └─────────┬───────────┘  │    tool use)
-                         │            │              │
-                         │   Tools:   │              │
-                         │   • xero.*  • etsy.*       │
-                         │   • email.* • db.*         │
-                         └─────┬──────────────┬──────┘
-                               │              │
-                    ┌──────────▼───┐   ┌──────▼────────┐
-                    │   Postgres   │   │ Background     │
-                    │ tokens/state │   │ worker (Etsy   │
-                    │ audit/queue  │   │ poll, email    │
-                    └──────────────┘   │ ingest, retry) │
-                                       └────────────────┘
-                          │                    │
-                    ┌─────▼─────┐        ┌─────▼─────┐
-                    │  Xero API │        │  Etsy API │
-                    │  OAuth2   │        │  OAuth2   │
-                    └───────────┘        └───────────┘
+        AUTOMATED FACE                          CONVERSATIONAL FACE
+  ┌───────────────────────┐              ┌──────────────────────────────┐
+  │ Background worker      │              │ Claude app (Desktop / web)    │
+  │ • Gmail ingest         │              │      ▲  chat                  │
+  │ • Etsy sales/fee sync   │             │      │  (MCP)                 │
+  │ • token refresh, retry  │             │  ┌───┴──────────┐             │
+  └──────────┬─────────────┘             │  │  MCP server   │  ← optional │
+             │                            │  └───┬──────────┘             │
+             │                            └──────┼───────────────────────┘
+             ▼                                   ▼
+      ┌──────────────────────────────────────────────────────┐
+      │                CORE SERVICE (FastAPI)                 │
+      │   Tool layer:  xero.*  etsy.*  gmail.*  dropbox.*      │
+      │   Business flows + Claude extraction/categorization   │
+      └───────────────┬───────────────────────┬──────────────┘
+                      │                        │
+             ┌────────▼────────┐      ┌────────▼─────────┐
+             │    Postgres     │      │   Claude API     │
+             │ tokens / state  │      │  (Opus 5, tools) │
+             │ audit / queue   │      └──────────────────┘
+             └─────────────────┘
+                      │
+   ┌───────────┬──────┴──────┬───────────┬──────────────┐
+   ▼           ▼             ▼           ▼              ▼
+ Xero API    Etsy API     Gmail API   Dropbox API   (chart of accounts,
+ OAuth2      OAuth2       OAuth2      OAuth2          fee mappings)
 ```
 
-### Components
+### The tool layer (shared)
 
-- **FastAPI backend** — HTTP API, OAuth callback endpoints, chat/Q&A endpoint,
-  Etsy webhook receiver, email webhook receiver.
-- **Agent orchestrator** — a Claude tool-use loop. Claude is given a set of
-  typed tools (below) and drives the multi-step work; the harness executes each
-  tool call in code. The **Claude Agent SDK / Tool Runner** handles the loop.
-- **Tools exposed to Claude** — thin, typed wrappers over Xero, Etsy, email, and
-  the database. Financial *writes* are separate, gated tools (§6).
-- **Background worker** — scheduled jobs: poll Etsy for new receipts, ingest new
-  emails, run token refresh, retry failed writes. (APScheduler, Celery, or a
-  simple asyncio loop — decide at build time.)
-- **Postgres** — OAuth tokens (encrypted), sync cursors, an idempotency ledger,
-  an audit log of every action, and a review queue for pending approvals.
+Every integration is a thin, typed wrapper. These same tools are called by the
+background workers (automated flows) **and** exposed to the chat face via MCP.
+Write once, use from both.
 
 ### Suggested project layout
 
 ```
 app/
-  main.py                 # FastAPI app + routes
-  config.py               # settings (env-driven)
-  auth/
-    xero_oauth.py         # Xero OAuth2 + token refresh
-    etsy_oauth.py         # Etsy OAuth2 + token refresh
-    tokens.py             # encrypted token storage
-  integrations/
-    xero_client.py        # Xero API wrapper
-    etsy_client.py        # Etsy Open API v3 wrapper
-    email_source.py       # Gmail / IMAP ingestion
-  agent/
-    orchestrator.py       # Claude tool-use loop
-    tools.py              # tool definitions (schemas + handlers)
-    prompts.py            # system prompts
-    extract.py            # receipt/email → structured fields (Claude)
-    categorize.py         # expense → Xero account mapping (Claude)
-  flows/
-    etsy_expenses.py      # Etsy fees → Xero
-    etsy_sales.py         # Etsy sales → Xero
-    email_expenses.py     # email receipts → Xero
-    inventory.py          # Etsy listings ops
-  workers/
-    scheduler.py          # polling & retry jobs
-  db/
-    models.py             # SQLAlchemy models
-    migrations/           # Alembic
+  main.py
+  config.py
+  auth/            xero_oauth.py  etsy_oauth.py  gmail_oauth.py  dropbox_oauth.py  tokens.py
+  integrations/    xero_client.py  etsy_client.py  gmail_source.py  dropbox_client.py
+  agent/           orchestrator.py  tools.py  prompts.py  extract.py  categorize.py  listing_draft.py
+  flows/           etsy_sales.py  etsy_expenses.py  email_expenses.py  listings.py
+  mcp/             server.py        # exposes the tool layer to the Claude app (optional face)
+  workers/         scheduler.py
+  db/              models.py  migrations/
   tests/
 ```
 
@@ -136,129 +109,168 @@ app/
 ## 4. The integrations
 
 ### Xero
-- **Auth:** OAuth 2.0, authorization-code flow, with refresh tokens (Xero access
-  tokens last 30 min; refresh tokens rotate on use — must persist the new one).
-- **API:** Accounting API — Invoices (sales), Bills / `ACCPAY` invoices and
-  Spend Money bank transactions (expenses), Contacts, Accounts (chart of
-  accounts), Reports.
-- **SDK:** official `xero-python`.
-- **Note:** every expense needs an **account code** and **tax rate** — the
-  categorization step (Claude) maps to your chart of accounts.
+- **Auth:** OAuth 2.0 auth-code flow; access tokens ~30 min, rotating refresh
+  tokens (must persist the new refresh token on each use).
+- **API:** Invoices (sales), Bills/Spend-Money (expenses), Contacts, Accounts
+  (chart of accounts), Reports. SDK: `xero-python`.
 
 ### Etsy
-- **Auth:** OAuth 2.0 (PKCE), scoped tokens, refresh tokens.
-- **API:** Etsy Open API v3 — `getShopReceipts` (orders), transactions, ledger
-  entries (fees/payouts), `getListingsByShop` and listing update endpoints
-  (inventory/pricing).
-- **Webhooks:** Etsy's push support is limited, so **polling on a schedule is
-  the primary mechanism**; track a cursor so we only process new records.
+- **Auth:** OAuth 2.0 (PKCE), scoped refresh tokens.
+- **API:** Etsy Open API v3.
+  - *Read sales/fees:* `getShopReceipts`, transactions, ledger entries.
+  - *Create listings:* `createDraftListing` → `uploadListingImage` (up to 10) →
+    `uploadListingVideo` (optional) → `updateListingInventory` (SKU, price,
+    quantity, variations) → publish by updating listing `state` to `active`.
+  - *Manage:* `getListingsByShop`, listing update endpoints (stock, pricing).
+- **Webhooks are limited** → poll on a schedule with a stored cursor.
 
-### Email
-- **Option A (recommended): Gmail API** with a `watch` subscription → Pub/Sub →
-  webhook. Clean, structured, good attachment handling.
-- **Option B: IMAP polling** — simpler to start, less real-time.
-- **Option C: forward-to-address** — a dedicated inbox that forwards to a webhook.
-- Claude reads the email body **plus** PDF/image attachments (the Claude API
-  accepts PDFs and images directly) to extract expense fields.
+### Gmail
+- **Auth:** OAuth 2.0.
+- **Mechanism:** Gmail API with a `watch` subscription → Pub/Sub → webhook (near
+  real-time). Fetch message body + attachments; Claude reads the PDF/image
+  attachments directly (the Claude API accepts them).
+
+### Dropbox
+- **Auth:** OAuth 2.0 (short-lived tokens + refresh).
+- **Role:** the file store for everything to be uploaded — **listing photos and
+  video** (input to the Etsy listing flow), and optionally an archive of
+  processed receipts.
+- **API:** `files/list_folder`, `files/download`, `files/get_temporary_link`.
+  A convention like `/listings/<sku>/` lets the agent find the assets for a listing.
 
 ---
 
 ## 5. Key flows
 
-**Flow A — Etsy sales → Xero**
-Poll `getShopReceipts` → for each new receipt, create a Xero sales invoice (or
-bank transaction for the payout) → record Etsy fees as an expense against the
-same payout → mark the receipt processed in the idempotency ledger.
+**Flow A — Etsy purchases → Xero sales**
+Poll `getShopReceipts` → for each new receipt create a Xero **sales invoice** →
+record Etsy fees against the payout → mark the receipt processed in the
+idempotency ledger.
 
-**Flow B — Expenses from email**
-Email arrives → worker fetches body + attachments → Claude extracts
+**Flow B — Expenses from Gmail**
+Gmail `watch` fires → fetch body + attachments → Claude extracts
 `{vendor, date, total, tax, currency, line items}` → Claude suggests a Xero
-account/category → a **draft** bill is created in Xero (status `DRAFT`) and added
-to the review queue → human approves → code posts it as authorised.
+account → a **draft** bill is created in Xero and queued for review → human
+approves → code authorises it. (Optionally archive the receipt to Dropbox.)
 
 **Flow C — Etsy fee expenses**
 Read Etsy ledger/fee entries → group by type (listing, transaction, ads,
-shipping label) → create the corresponding expenses in Xero.
+shipping label) → create the matching Xero expenses.
 
 **Flow D — Reporting & Q&A**
-User asks a question → Claude, with read-only Xero/Etsy tools, gathers the data
-and answers. No writes on this path.
+User asks a question (via the chat face, §7) → Claude gathers data with
+read-only tools and answers. No writes.
 
-**Flow E — Inventory / listings**
-Read Etsy listings → optionally reconcile against Xero inventory data → update
-stock/price via Etsy API (gated the same way as financial writes if it changes
-live pricing).
+**Flow E — Create an Etsy listing from Dropbox**
+Trigger (chat command or a new folder in Dropbox) → agent lists the images in the
+Dropbox folder → Claude drafts title, description, tags, materials, and suggested
+category/attributes from the images + any notes → agent creates a **draft** Etsy
+listing, uploads the photos/video, sets inventory (SKU, price, quantity,
+variations) → human reviews the draft → **publish** on approval.
+*Mirrors Etsy's own create-a-listing steps: photos/video → title →
+about/category/attributes → description → inventory (price, quantity, SKU,
+variations) → shipping profile → tags → publish.*
 
----
-
-## 6. Guardrails (the part that matters for accounting)
-
-- **Human-in-the-loop for financial writes.** Expenses and sales are created as
-  **`DRAFT`** in Xero and placed in a review queue. Nothing is authorised
-  without approval (at least until you trust it on a category-by-category basis).
-- **Idempotency ledger.** Every source record (Etsy receipt ID, email message
-  ID) is recorded once; re-processing is a no-op. This is what stops duplicate
-  bookkeeping entries.
-- **Full audit log.** Every tool call, extraction, categorization, and write is
-  logged with inputs, Claude's output, and the resulting Xero object ID.
-- **Secrets management.** OAuth tokens encrypted at rest; API keys and client
-  secrets in a secrets manager / env, never in code or the repo.
-- **Confidence + escalation.** Low-confidence extractions (unreadable receipt,
-  ambiguous vendor) are flagged for manual entry rather than guessed.
+**Flow F — Inventory / listings ops**
+Read Etsy listings, reconcile against Xero data where relevant, update
+stock/price (price changes gated like any live-store write).
 
 ---
 
-## 7. Technology choices
+## 6. Guardrails
+
+- **Human-in-the-loop for writes.** Xero expenses/sales are created as `DRAFT`;
+  Etsy listings are created as **draft** and only published on approval. Nothing
+  hits your books or your storefront unreviewed (relaxed per-category once trusted).
+- **Idempotency ledger.** Each source record (Etsy receipt ID, Gmail message ID,
+  Dropbox folder) is processed once — this is what prevents duplicate entries.
+- **Full audit log** of every tool call, extraction, and resulting object ID.
+- **Secrets** encrypted at rest / in a secrets manager; never in code or the repo.
+- **Confidence + escalation** — low-confidence extractions/listings are flagged
+  for manual handling rather than guessed.
+
+---
+
+## 7. Front end / interface — answering "can I use Claude's chat as the front?"
+
+**Yes, and for an internal back-office tool it's the recommended approach.** The
+pattern you read about is **MCP (Model Context Protocol)**: you build a small MCP
+server that exposes your tool layer, and the **Claude app (Desktop or claude.ai
+via a custom connector) becomes the chat front end** — you type
+*"create a listing for the mugs in Dropbox"* or *"what were my Etsy fees last
+month?"* and Claude calls your tools. No custom chat UI to build.
+
+Three options, and it's not either/or:
+
+| Option | What it is | Best for | Effort |
+|--------|-----------|----------|--------|
+| **A. MCP + Claude app** *(recommended)* | Expose tools via MCP; chat in Claude Desktop/web | Internal ops & Q&A — you/your team | Low |
+| **B. Custom chat endpoint** | Your own UI + Claude API tool loop | Branded / customer-facing / embedded | High |
+| **C. Managed Agents** | Anthropic hosts the loop + sandbox on a schedule | Autonomous scheduled runs | Medium |
+
+**Key point:** the chat face is **optional and additive**. The automated flows
+(Gmail ingest, Etsy sales/fee sync) run headless as background workers and need
+no chat at all — they're triggered by events and schedules. The chat face is for
+the *human-driven* actions: creating listings, approving drafts, and asking
+questions. Because both faces call the same tool layer, adding MCP later is
+cheap — so we can build the core + workers first and bolt on the chat face when
+you want it.
+
+Recommendation: **build the core service + workers first, then add the MCP
+server (Option A)** as the conversational face. Revisit Option B only if you ever
+want a branded/customer-facing chat.
+
+---
+
+## 8. Technology choices
 
 | Concern | Choice |
 |---------|--------|
 | Language / framework | Python 3.12 + FastAPI |
 | Reasoning engine | Claude (Opus 5) via the `anthropic` SDK, tool use |
-| Xero SDK | `xero-python` |
-| Etsy | Etsy Open API v3 (direct HTTP / thin wrapper) |
+| Chat front end | MCP server + Claude Desktop/web (Option A) |
+| Xero | `xero-python` |
+| Etsy | Etsy Open API v3 |
+| Gmail | Gmail API (`watch` + Pub/Sub) |
+| Dropbox | Dropbox Python SDK |
 | Database | PostgreSQL + SQLAlchemy + Alembic |
 | Background jobs | APScheduler (start) → Celery/RQ if it grows |
-| Email | Gmail API (recommended) or IMAP |
 | Deployment | Container (Docker); host of your choice |
 
 ---
 
-## 8. Roadmap
+## 9. Roadmap
 
-**Phase 0 — Foundations**
-Repo scaffold, config, Postgres schema, OAuth for Xero *and* Etsy end-to-end
-(connect, store tokens, refresh). Prove you can read from both APIs.
+**Phase 0 — Foundations.** Repo scaffold, config, Postgres schema, OAuth for all
+four services (Xero, Etsy, Gmail, Dropbox) end to end. Prove reads from each.
 
-**Phase 1 — First working slice**
-Pick **one** flow — recommended: *Etsy fees → Xero draft expenses* — and build it
-end to end, including the idempotency ledger and audit log. This validates the
-whole write path with human approval.
+**Phase 1 — First working slice.** *Etsy fees → Xero draft expenses*, with the
+idempotency ledger and audit log — validates the whole write path with approval.
 
-**Phase 2 — Email expenses**
-Email ingestion + Claude extraction + Claude categorization + draft bills +
-review queue.
+**Phase 2 — Etsy purchases → Xero sales** (Flow A).
 
-**Phase 3 — Etsy sales sync**
-Full receipts → Xero invoices/payouts with fee netting.
+**Phase 3 — Gmail expenses** (Flow B): ingest + Claude extraction + drafts + review.
 
-**Phase 4 — Reporting & Q&A**
-Read-only agent + chat endpoint.
+**Phase 4 — Create listings from Dropbox** (Flow E): Dropbox read + Claude drafting
++ draft Etsy listing + publish-on-approval.
 
-**Phase 5 — Inventory / listings ops.**
+**Phase 5 — Chat face.** MCP server over the tool layer → Q&A + human-driven ops
+in the Claude app.
 
-**Phase 6 — Hardening**
-Reduce human-in-the-loop where trust is established, dashboards, alerting.
+**Phase 6 — Inventory ops + hardening.** Reduce human-in-the-loop where trusted;
+dashboards, alerting.
 
 ---
 
-## 9. Open questions to settle before Phase 1
+## 10. Open questions to settle before building
 
-1. **Email source** — Gmail API, IMAP, or forward-to-address?
-2. **Expense target in Xero** — Bills (`ACCPAY`) or Spend Money bank
-   transactions? (Depends on how you currently do your books.)
-3. **Chart of accounts** — which Xero accounts/tax rates should Etsy fees, ads,
-   shipping, and typical supplier costs map to?
-4. **Multi-currency** — do Etsy payouts and suppliers involve more than one
-   currency?
-5. **Where will this run** — a always-on server, a container platform, serverless?
-6. **Who approves** — just you, or a team review step?
+1. **Xero expense target** — Bills (`ACCPAY`) or Spend-Money bank transactions?
+2. **Chart of accounts** — which Xero accounts/tax rates for Etsy fees, ads,
+   shipping, and typical supplier costs; which account/tax rate for Etsy sales.
+3. **Multi-currency** — do Etsy payouts / suppliers involve more than one currency?
+4. **Dropbox layout** — folder convention that maps assets to a listing (e.g.
+   `/listings/<sku>/photos`), and what metadata (price, variations) travels with them.
+5. **Listing defaults** — shipping profile(s), return policy, processing time,
+   shop section — set once and reused, or chosen per listing?
+6. **Where it runs** — always-on server, container platform, or serverless?
+7. **Who approves** drafts — just you, or a team review step?
