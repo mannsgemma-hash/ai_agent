@@ -152,6 +152,21 @@ app/
 - **API:** `files/list_folder`, `files/download`, `files/get_temporary_link`.
   A convention like `/listings/<sku>/` lets the agent find the assets for a listing.
 
+### Canva (optional — thumbnail generation)
+- **Auth:** OAuth 2.0 (auth-code + PKCE).
+- **Role:** generate branded Etsy **thumbnails** from a template.
+- **API (Connect API):** Asset Upload → Autofill a Brand Template (image slot +
+  title/price text) → Export to PNG (async job, poll for the download URL).
+- **⚠️ Plan gate:** the **Autofill / Brand Template** endpoints have required a
+  **Canva Enterprise** plan — verify your tier before relying on this. The
+  general asset/design/export endpoints are more broadly available.
+- **Design decision — keep it pluggable.** The thumbnail step sits behind a
+  single interface, `make_thumbnail(photo, title, price) -> image`, with two
+  possible backends: **Canva** (if on Enterprise) or a **local Pillow
+  compositor** (no OAuth, no plan gate, less design flexibility). Flow E doesn't
+  care which is used, so we can start with whatever the plan supports and swap
+  later.
+
 ---
 
 ## 5. Key flows
@@ -178,9 +193,11 @@ read-only tools and answers. No writes.
 **Flow E — Create an Etsy listing from Dropbox**
 Trigger (chat command or a new folder in Dropbox) → agent lists the images in the
 Dropbox folder → Claude drafts title, description, tags, materials, and suggested
-category/attributes from the images + any notes → agent creates a **draft** Etsy
-listing, uploads the photos/video, sets inventory (SKU, price, quantity,
-variations) → human reviews the draft → **publish** on approval.
+category/attributes from the images + any notes → **generate the thumbnail** via
+`make_thumbnail(photo, title, price)` (Canva Autofill or local Pillow — see §4) →
+agent creates a **draft** Etsy listing, uploads the photos/video, sets inventory
+(SKU, price, quantity, variations) → human reviews the draft → **publish** on
+approval.
 *Mirrors Etsy's own create-a-listing steps: photos/video → title →
 about/category/attributes → description → inventory (price, quantity, SKU,
 variations) → shipping profile → tags → publish.*
@@ -286,5 +303,7 @@ dashboards, alerting.
    `/listings/<sku>/photos`), and what metadata (price, variations) travels with them.
 5. **Listing defaults** — shipping profile(s), return policy, processing time,
    shop section — set once and reused, or chosen per listing?
+5a. **Canva plan** — are you on Canva Enterprise (needed for the Autofill/Brand
+   Template API)? If not, thumbnails use the local Pillow backend instead.
 6. **Where it runs** — always-on server, container platform, or serverless?
 7. **Who approves** drafts — just you, or a team review step?
