@@ -11,16 +11,18 @@ Status: planning only. No application code yet.
 ## 1. What the agent does
 
 1. **Create Etsy listings** from images/files held in **Dropbox** (see §5, Flow E).
-2. **Record purchases as sales in Xero — from every channel.** Etsy orders **and**
-   app subscription revenue (via **RevenueCat**, which aggregates Apple App Store
-   + Google Play billing) become sales in Xero, with each channel's commission and
-   payout handled per its own rules.
-3. **Expenses from Etsy → Xero.** Etsy seller/transaction/ads/shipping fees
-   become expense records in Xero.
-4. **Expenses from email → Xero.** Supplier invoices/receipts arriving in
+2. **Record app subscription income in Xero.** RevenueCat (aggregating Apple App
+   Store + Google Play billing) → sales posted to **account 200 Sales**.
+3. **Expenses from email → Xero.** Supplier invoices/receipts arriving in
    **Gmail** (body + PDF/image attachments) are extracted and posted to Xero.
-5. **Reporting & Q&A.** Natural-language questions against live Xero/Etsy data.
-6. **Inventory / listings operations.** Read/update Etsy listings, stock, pricing.
+4. **Reporting & Q&A.** Natural-language questions against live Xero/Etsy data.
+5. **Inventory / listings operations.** Read/update Etsy listings, stock, pricing.
+
+> ⚠️ **Out of scope — Etsy financials.** Etsy sales and Etsy fees already flow to
+> Xero via the existing **Etsy↔Xero integration** (the `ET-*` accounts). The agent
+> must **never** post Etsy income or fees — that would double-count. The agent's
+> Etsy role is **listings and store management only**. Enforced in code by
+> `coa.assert_writable()`, which rejects any `ET-` account.
 
 ---
 
@@ -211,14 +213,12 @@ app/
 
 ## 5. Key flows
 
-**Flow A — Purchases → Xero sales (multi-channel)**
-Each sales channel feeds the same Xero sales pipeline:
-- *Etsy:* poll `getShopReceipts` → create a Xero **sales invoice** per receipt →
-  record Etsy fees against the payout.
-- *App subscriptions:* RevenueCat **webhook** fires → verify → create the Xero
-  **sales record** → record the Apple/Google commission as an expense.
-Both dedupe via the idempotency ledger and reconcile the gross booking against the
-delayed, net-of-commission payout that actually lands in the bank.
+**Flow A — App subscription income → Xero**
+RevenueCat **webhook** fires → verify the Authorization header → dedupe by event
+id → create the Xero sales record against **200 Sales** → record the Apple/Google
+commission as an expense → reconcile the gross booking against the delayed,
+net-of-commission payout that lands in the bank.
+*(Etsy sales/fees are handled by the existing Etsy↔Xero integration — not here.)*
 
 **Flow B — Expenses from Gmail**
 Gmail `watch` fires → fetch body + attachments → Claude extracts
@@ -226,9 +226,8 @@ Gmail `watch` fires → fetch body + attachments → Claude extracts
 account → a **draft** bill is created in Xero and queued for review → human
 approves → code authorises it. (Optionally archive the receipt to Dropbox.)
 
-**Flow C — Etsy fee expenses**
-Read Etsy ledger/fee entries → group by type (listing, transaction, ads,
-shipping label) → create the matching Xero expenses.
+*(Flow C — Etsy fee expenses — **removed**: handled by the existing Etsy↔Xero
+integration, which posts fees to `ET-80000`/`ET-80001`/`ET-80003`.)*
 
 **Flow D — Reporting & Q&A**
 User asks a question (via the chat face, §7) → Claude gathers data with
@@ -347,13 +346,15 @@ dashboards, alerting.
 ## 10. Open questions to settle before building
 
 1. **Xero expense target** — Bills (`ACCPAY`) or Spend-Money bank transactions?
-2. **Chart of accounts** — which Xero accounts/tax rates for Etsy fees, ads,
-   shipping, and typical supplier costs; which account/tax rate for **each sales
-   channel** (Etsy vs app subscriptions) and for the Apple/Google commission.
-2a. **Revenue recognition & tax on subscriptions** — record gross booking then
-   net the commission, and how to reconcile to Apple/Google payouts; plus any VAT
-   / sales-tax handling on digital subscriptions (Apple/Google often collect and
-   remit this, which changes what you book).
+2. ~~Chart of accounts~~ — **settled.** See `docs/chart_of_accounts.md` and
+   `app/accounting/coa.py`. All agent-booked income → **200 Sales**; expenses map
+   to the dedicated accounts; `ET-*` accounts are reserved and blocked.
+2a. **GST on app subscription income** ⚠️ *(still open — needs your accountant.)*
+   200 Sales carries **GST on Income**, correct for domestic sales. But
+   **international** app sales are usually **GST-free exports**, and Apple/Google
+   often collect and remit consumption tax themselves. Until confirmed, the agent
+   books income at GST on Income and flags non-domestic revenue for review rather
+   than guessing.
 3. **Multi-currency** — do Etsy payouts / suppliers involve more than one currency?
 4. **Dropbox layout** — folder convention that maps assets to a listing (e.g.
    `/listings/<sku>/photos`), and what metadata (price, variations) travels with them.
