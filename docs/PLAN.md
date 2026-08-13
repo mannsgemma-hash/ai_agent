@@ -11,8 +11,10 @@ Status: planning only. No application code yet.
 ## 1. What the agent does
 
 1. **Create Etsy listings** from images/files held in **Dropbox** (see §5, Flow E).
-2. **Record Etsy purchases as sales in Xero.** Every Etsy order becomes a sales
-   invoice in Xero, with Etsy fees recorded against the payout.
+2. **Record purchases as sales in Xero — from every channel.** Etsy orders **and**
+   app subscription revenue (via **RevenueCat**, which aggregates Apple App Store
+   + Google Play billing) become sales in Xero, with each channel's commission and
+   payout handled per its own rules.
 3. **Expenses from Etsy → Xero.** Etsy seller/transaction/ads/shipping fees
    become expense records in Xero.
 4. **Expenses from email → Xero.** Supplier invoices/receipts arriving in
@@ -152,6 +154,28 @@ app/
 - **API:** `files/list_folder`, `files/download`, `files/get_temporary_link`.
   A convention like `/listings/<sku>/` lets the agent find the assets for a listing.
 
+### RevenueCat (app subscription revenue)
+- **Role:** the single source for app/subscription income. RevenueCat sits on top
+  of **Apple App Store** and **Google Play** billing, so you integrate it once
+  instead of wiring both stores (and their receipt-validation APIs) separately.
+- **Auth:** a **secret REST API key** (Bearer) for reads; **webhooks** are
+  verified with a shared **Authorization** header you set.
+- **Mechanism:** RevenueCat **webhooks** push events in real time —
+  `INITIAL_PURCHASE`, `RENEWAL`, `CANCELLATION`, `REFUND`, etc. The app receives
+  them at `/webhooks/revenuecat`, verifies the header, dedupes by event id
+  (idempotency ledger), and creates the matching Xero sales record.
+- **⚠️ Accounting nuance (same shape as Etsy fees/payouts):** Apple/Google keep a
+  **15–30% commission** and remit **net** payouts on **their own schedule**, not
+  per transaction. So a RevenueCat event is the *gross booking*; reconciling that
+  to the actual (delayed, net-of-commission) bank deposit is a separate step.
+  Model it the same way as Etsy: gross sale + platform commission expense +
+  payout reconciliation.
+- **Apple/Google direct** (App Store Server API / Play Developer API) is a
+  *fallback/supplement* if you ever need raw store data RevenueCat doesn't expose
+  — not required for the core flow.
+- **Note:** this is webhook + API-key based, so it sits **outside** the OAuth
+  provider registry used for Xero/Etsy/Gmail/Dropbox.
+
 ### Canva — thumbnail generation (no Enterprise plan)
 - **Role:** generate branded Etsy **thumbnails**, keeping Canva's design tools.
 - **The Enterprise gate is only on Autofill / Brand Template** (hands-off
@@ -187,10 +211,14 @@ app/
 
 ## 5. Key flows
 
-**Flow A — Etsy purchases → Xero sales**
-Poll `getShopReceipts` → for each new receipt create a Xero **sales invoice** →
-record Etsy fees against the payout → mark the receipt processed in the
-idempotency ledger.
+**Flow A — Purchases → Xero sales (multi-channel)**
+Each sales channel feeds the same Xero sales pipeline:
+- *Etsy:* poll `getShopReceipts` → create a Xero **sales invoice** per receipt →
+  record Etsy fees against the payout.
+- *App subscriptions:* RevenueCat **webhook** fires → verify → create the Xero
+  **sales record** → record the Apple/Google commission as an expense.
+Both dedupe via the idempotency ledger and reconcile the gross booking against the
+delayed, net-of-commission payout that actually lands in the bank.
 
 **Flow B — Expenses from Gmail**
 Gmail `watch` fires → fetch body + attachments → Claude extracts
@@ -285,6 +313,7 @@ want a branded/customer-facing chat.
 | Etsy | Etsy Open API v3 |
 | Gmail | Gmail API (`watch` + Pub/Sub) |
 | Dropbox | Dropbox Python SDK |
+| App revenue | RevenueCat (webhooks + REST) over Apple/Google billing |
 | Database | PostgreSQL + SQLAlchemy + Alembic |
 | Background jobs | APScheduler (start) → Celery/RQ if it grows |
 | Deployment | Container (Docker); host of your choice |
@@ -299,7 +328,8 @@ four services (Xero, Etsy, Gmail, Dropbox) end to end. Prove reads from each.
 **Phase 1 — First working slice.** *Etsy fees → Xero draft expenses*, with the
 idempotency ledger and audit log — validates the whole write path with approval.
 
-**Phase 2 — Etsy purchases → Xero sales** (Flow A).
+**Phase 2 — Purchases → Xero sales** (Flow A): Etsy receipts first, then the
+RevenueCat webhook for app subscription revenue (both channels, one pipeline).
 
 **Phase 3 — Gmail expenses** (Flow B): ingest + Claude extraction + drafts + review.
 
@@ -318,7 +348,12 @@ dashboards, alerting.
 
 1. **Xero expense target** — Bills (`ACCPAY`) or Spend-Money bank transactions?
 2. **Chart of accounts** — which Xero accounts/tax rates for Etsy fees, ads,
-   shipping, and typical supplier costs; which account/tax rate for Etsy sales.
+   shipping, and typical supplier costs; which account/tax rate for **each sales
+   channel** (Etsy vs app subscriptions) and for the Apple/Google commission.
+2a. **Revenue recognition & tax on subscriptions** — record gross booking then
+   net the commission, and how to reconcile to Apple/Google payouts; plus any VAT
+   / sales-tax handling on digital subscriptions (Apple/Google often collect and
+   remit this, which changes what you book).
 3. **Multi-currency** — do Etsy payouts / suppliers involve more than one currency?
 4. **Dropbox layout** — folder convention that maps assets to a listing (e.g.
    `/listings/<sku>/photos`), and what metadata (price, variations) travels with them.

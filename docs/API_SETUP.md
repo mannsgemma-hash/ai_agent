@@ -161,6 +161,38 @@ ID/secret, scopes — is only worth it if you later go Enterprise for Autofill.)
 
 ---
 
+## 6. RevenueCat (app subscription revenue)
+
+RevenueCat sits over Apple App Store + Google Play billing, so this one
+integration covers both stores. It's **not** OAuth — it's an API key plus
+webhooks.
+
+**Prereq:** your app is already set up in RevenueCat with the Apple/Google store
+credentials connected (that's part of shipping the app, separate from this agent).
+
+1. In the **RevenueCat dashboard → Project settings → API keys**, copy a
+   **secret API key** (server-side; not the public SDK key). Store as
+   `REVENUECAT_API_KEY`.
+2. **Integrations → Webhooks → Add webhook.**
+   - **URL:** `https://<your-domain>/webhooks/revenuecat` (needs a public HTTPS
+     URL — for local testing use a tunnel like ngrok).
+   - **Authorization header:** set a secret value of your choice; store the same
+     value as `REVENUECAT_WEBHOOK_AUTHORIZATION` so the app can verify incoming
+     webhooks.
+3. **Events** you'll act on: `INITIAL_PURCHASE`, `RENEWAL`, `NON_RENEWING_PURCHASE`,
+   `CANCELLATION`, `REFUND` (→ credit note in Xero).
+4. **Gotcha (accounting, not setup):** webhook events are **gross bookings**.
+   Apple/Google keep 15–30% and pay out **net, on their own schedule** — the
+   agent records the sale + commission and reconciles to the actual payout
+   separately (see `PLAN.md` §4/§5).
+
+*(Direct Apple **App Store Server API** / Google **Play Developer API** are only
+needed if you later want raw store data RevenueCat doesn't surface.)*
+
+Store: `REVENUECAT_API_KEY`, `REVENUECAT_WEBHOOK_AUTHORIZATION`.
+
+---
+
 ## Redirect URIs (register these per service)
 
 | Service | Dev redirect URI | Prod redirect URI |
