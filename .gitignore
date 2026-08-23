@@ -15,6 +15,9 @@ venv/
 *.db
 *.sqlite3
 
+# Generated thumbnails
+out/
+
 # OS / editor
 .DS_Store
 .idea/

@@ -1,0 +1,36 @@
+{
+  "canvas_w": 2000,
+  "canvas_h": 2000,
+  "background": "#FBF7F0",
+
+  "art_box": [0, 0, 2000, 2000],
+  "art_fit": "cover",
+
+  "frame_path": "assets/frame.png",
+
+  "title": {
+    "box": [200, 1580, 1600, 240],
+    "font_path": null,
+    "size": 130,
+    "min_size": 48,
+    "color": "#3A322C",
+    "align": "center",
+    "valign": "middle",
+    "uppercase": false,
+    "max_lines": 2,
+    "shadow": false
+  },
+
+  "subtitle": {
+    "box": [200, 1830, 1600, 90],
+    "font_path": null,
+    "size": 58,
+    "min_size": 30,
+    "color": "#7A6E63",
+    "align": "center",
+    "valign": "middle",
+    "uppercase": true,
+    "max_lines": 1,
+    "shadow": false
+  }
+}
